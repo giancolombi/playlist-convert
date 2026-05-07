@@ -46,23 +46,33 @@ enum Config {
         }
     }
 
-    static func loadUserConfig() throws -> UserConfig {
-        let data: Data
-        do {
-            data = try Data(contentsOf: configFile)
-        } catch {
-            throw CLIError.userMessage("""
-                Missing config file at \(configFile.path).
-                Create it with:
-                  mkdir -p \(configDir.path)
-                  cat > \(configFile.path) <<EOF
-                  { "spotify_client_id": "<your-spotify-client-id>" }
-                  EOF
-                Get a Client ID at https://developer.spotify.com/dashboard
-                Set the redirect URI to \(spotifyRedirectURI)
-                """)
+    /// Returns nil if the config file does not exist (caller can run the wizard).
+    /// Throws on a malformed file.
+    static func loadUserConfig() throws -> UserConfig? {
+        guard FileManager.default.fileExists(atPath: configFile.path) else {
+            return nil
         }
+        let data = try Data(contentsOf: configFile)
         return try JSONDecoder().decode(UserConfig.self, from: data)
+    }
+
+    static func ensureConfigDir() throws {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: configDir.path) {
+            try fm.createDirectory(at: configDir, withIntermediateDirectories: true)
+        }
+    }
+
+    static func writeUserConfig(_ config: UserConfig) throws {
+        try ensureConfigDir()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(config)
+        try data.write(to: configFile, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: configFile.path
+        )
     }
 }
 

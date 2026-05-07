@@ -9,8 +9,8 @@ struct PlaylistConvert: AsyncParsableCommand {
         abstract: "Convert a Spotify playlist into an Apple Music playlist on this Mac."
     )
 
-    @Argument(help: "Spotify playlist URL, URI, or 22-char ID.")
-    var spotifyPlaylist: String
+    @Argument(help: "Spotify playlist URL, URI, or 22-char ID. If omitted, you'll be prompted (with clipboard auto-detect).")
+    var spotifyPlaylist: String?
 
     @Option(name: .long, help: "Override the target playlist name.")
     var name: String?
@@ -43,9 +43,25 @@ struct PlaylistConvert: AsyncParsableCommand {
     }
 
     private func execute() async throws {
-        guard let playlistID = PlaylistURLParser.extractID(from: spotifyPlaylist) else {
+        // ── Config (run wizard on first use) ─────────────────────────────────
+        let userConfig: Config.UserConfig
+        if let existing = try Config.loadUserConfig() {
+            userConfig = existing
+        } else {
+            userConfig = try SetupWizard.runFirstTimeSetup()
+        }
+
+        // ── Resolve the playlist (interactive if no arg) ─────────────────────
+        let playlistInput: String
+        if let arg = spotifyPlaylist, !arg.isEmpty {
+            playlistInput = arg
+        } else {
+            playlistInput = InteractivePrompt.askForPlaylist()
+        }
+
+        guard let playlistID = PlaylistURLParser.extractID(from: playlistInput) else {
             throw CLIError.userMessage("""
-                Could not parse a Spotify playlist ID from: \(spotifyPlaylist)
+                Could not parse a Spotify playlist ID from: \(playlistInput)
                 Accepted formats:
                   https://open.spotify.com/playlist/<22-char-id>
                   spotify:playlist:<22-char-id>
@@ -54,7 +70,6 @@ struct PlaylistConvert: AsyncParsableCommand {
         }
 
         // ── Spotify ───────────────────────────────────────────────────────────
-        let userConfig = try Config.loadUserConfig()
         let auth = SpotifyAuth(clientID: userConfig.spotifyClientID)
         let client = SpotifyClient(auth: auth)
 

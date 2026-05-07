@@ -32,55 +32,44 @@ Apple Developer membership the Apple Music Web API would require.
 - Apple Music subscription, signed into Music.app on this Mac
 - A free Spotify Developer app (used only for the Client ID)
 
-## First-time setup
+## Install
 
-1. Confirm macOS 14+:
-   ```sh
-   sw_vers -productVersion
-   ```
-2. Confirm Xcode CLT:
-   ```sh
-   xcode-select -p
-   ```
-3. Sign into Xcode once with your Apple ID (Xcode → Settings → Accounts) so a
-   Personal Team exists for ad-hoc signing. If full Xcode is not installed,
-   accepting the free developer agreement at developer.apple.com is enough.
-4. Create a free Spotify app at <https://developer.spotify.com/dashboard>. Set
-   the redirect URI to:
-   ```
-   http://127.0.0.1:8888/callback
-   ```
-   Copy the Client ID.
-5. Save the Client ID to the config file:
-   ```sh
-   mkdir -p ~/.config/playlist-convert
-   cat > ~/.config/playlist-convert/config.json <<EOF
-   { "spotify_client_id": "<your-spotify-client-id>" }
-   EOF
-   ```
-6. Build and ad-hoc sign:
-   ```sh
-   swift build -c release
-   codesign --force --sign - .build/release/PlaylistConvert
-   ```
-7. (Optional) Symlink to your `PATH`:
-   ```sh
-   ln -s "$PWD/.build/release/PlaylistConvert" /usr/local/bin/playlist-convert
-   ```
+```sh
+make install
+```
+
+That's it. `make install` builds in release mode, ad-hoc signs the binary, and
+symlinks it to `/usr/local/bin/playlist-convert`. (Override the location with
+`PREFIX=$HOME/.local make install`.)
+
+If `xcode-select -p` errors, run `xcode-select --install` first.
 
 ## First run
 
-The first invocation triggers up to three OS permission prompts. Approve each
-one and re-run if the run was interrupted.
+Just run it:
 
-1. **Browser** — Spotify will ask you to authorize the app. After the redirect
-   to `127.0.0.1:8888` you can close the tab.
-2. **Apple Music** — macOS asks for access to your Apple Music library. If you
-   miss the prompt, enable it under
-   `System Settings → Privacy & Security → Media & Apple Music`.
-3. **Automation → Music** — first time the tool drives Music.app via
-   AppleScript, macOS asks for permission. Enable it under
-   `System Settings → Privacy & Security → Automation → playlist-convert → Music`.
+```sh
+playlist-convert
+```
+
+On the first invocation the tool walks you through everything that's
+genuinely user-driven:
+
+1. **Spotify Client ID wizard** — opens the Spotify developer dashboard in
+   your browser and asks you to paste the Client ID. Saved to
+   `~/.config/playlist-convert/config.json` (mode 0600). One-time only.
+2. **Playlist URL** — if you already copied a Spotify playlist URL to your
+   clipboard, the tool detects it and offers it as the default; press Return
+   to accept. Otherwise, paste any URL / URI / 22-char ID.
+3. **Three OS permission prompts** (deliberately gated by macOS):
+   - Browser opens for Spotify authorization. After the redirect to
+     `127.0.0.1:8888` you can close the tab.
+   - macOS asks for access to your Apple Music library — accept. If you
+     miss the prompt: System Settings → Privacy & Security → Media & Apple
+     Music → enable playlist-convert.
+   - macOS asks for permission to control Music.app via AppleScript —
+     accept. If you miss it: System Settings → Privacy & Security →
+     Automation → playlist-convert → enable Music.
 
 Subsequent runs are silent — Spotify tokens are cached at
 `~/Library/Application Support/PlaylistConvert/spotify-tokens.json` (mode 0600).
@@ -88,6 +77,10 @@ Subsequent runs are silent — Spotify tokens are cached at
 ## Usage
 
 ```sh
+# Interactive — prompts for the playlist (uses clipboard if it's a Spotify URL)
+playlist-convert
+
+# Non-interactive — pass the URL directly
 playlist-convert "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
 ```
 
