@@ -20,13 +20,17 @@ local-only, no developer accounts required.
    no auth, no developer account. Title + artist + duration scoring is
    50/35/15, normalized to drop `"(feat.)"`, `"Remastered"`, diacritics,
    etc., gated by `--match-threshold` (default 85).
-3. **Writes** two artifacts:
+3. **Creates an empty playlist** in Music.app with the right name and
+   description (this *is* scriptable). Disable with `--no-playlist` if
+   you'd rather make it yourself.
+4. **Writes** two artifacts:
    - `matches.txt` — one Apple Music URL per matched track, ready to feed to
-     `open` or paste into Music.app.
+     `open` for batch loading.
    - `report.csv` — every Spotify track with match status, URL, and
      unmatched reasons.
-4. **You** open Music.app, make a new playlist, and add the matched tracks
-   (one `xargs` line takes care of bulk-loading them).
+5. **You** drag the matched tracks into the playlist Music.app already
+   created. The bridge can't fill it for you — that's the macOS
+   limitation this tool exists around.
 
 ## Why no MusicKit / no paid developer account
 
@@ -74,9 +78,13 @@ On the first run the tool walks you through everything that's user-driven:
 2. **Playlist URL** — if your clipboard already has a Spotify playlist URL,
    the tool offers it as the default; press Return to accept. Otherwise
    paste a URL, URI, or 22-char ID.
-3. **One OS permission prompt:** browser opens for Spotify authorization
-   (PKCE, runs once). After the redirect to `127.0.0.1:8888/callback` you
-   can close the tab.
+3. **Two OS permission prompts** (deliberately gated by macOS):
+   - Browser opens for Spotify authorization (PKCE, runs once). After the
+     redirect to `127.0.0.1:8888/callback` you can close the tab.
+   - macOS asks for permission to control Music.app via AppleScript so the
+     tool can create the empty playlist for you. If you miss the prompt:
+     System Settings → Privacy & Security → Automation → playlist-convert →
+     enable Music. Skip this entirely with `--no-playlist`.
 
 Subsequent runs are silent — Spotify tokens are cached at
 `~/Library/Application Support/PlaylistConvert/spotify-tokens.json` (mode 0600).
@@ -100,7 +108,9 @@ Accepts:
 
 | Flag | Description |
 | --- | --- |
+| `--name <string>` | Override the target Apple Music playlist name (defaults to the Spotify name). |
 | `--match-threshold <0–100>` | Score threshold for accepting a match. Default 85. Lower = more matches, more noise. |
+| `--no-playlist` | Skip creating the empty playlist in Music.app — just write `matches.txt` + `report.csv`. |
 | `--matches-path <path>` | Where to write the URL list. Default `./matches.txt`. |
 | `--report-path <path>` | Where to write the CSV. Default `./report.csv`. |
 | `--verbose` | Print each unmatched track and its best candidate. |
@@ -138,22 +148,26 @@ playlist is.
 
 ## Loading matches into Music.app
 
-After the run finishes, the simplest path is:
+After the run finishes, the empty playlist is already there. To populate it:
 
 ```sh
-# In Music.app: File → New Playlist (Cmd-N), name it, leave it open.
-# Then in Terminal:
-xargs -I{} open '{}' < matches.txt
+while IFS= read -r u; do
+  [[ "$u" =~ ^https ]] && open -a Safari "$u" && sleep 0.4
+done < matches.txt
 ```
 
-`open` hands each URL to Music.app, which loads the song. From there:
-1. In Music.app, navigate to each loaded song.
-2. Click the `+` (or right-click → "Add to Library").
-3. Drag from your library into your new playlist (or right-click → "Add to
-   Playlist" → your playlist).
+This opens each match in Safari at 2.5/sec. From each tab:
 
-There's no scripted shortcut for that last step; it's the macOS limitation
-this tool exists around.
+1. Click **Listen on Apple Music** (the in-page button) — Music.app loads
+   the song.
+2. Click the **+** to add to your library.
+3. Drag the song from the library into the playlist `playlist-convert`
+   already created.
+
+For very long playlists, do it in batches by replacing `< matches.txt` with
+`<(grep '^https' matches.txt | head -25)`.
+
+There's no scripted shortcut for steps 1–3; that's the macOS limitation.
 
 ## Troubleshooting
 

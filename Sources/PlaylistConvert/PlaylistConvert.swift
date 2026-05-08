@@ -18,6 +18,9 @@ struct PlaylistConvert: AsyncParsableCommand {
     @Argument(help: "Spotify playlist URL, URI, or 22-char ID. If omitted, you'll be prompted (with clipboard auto-detect).")
     var spotifyPlaylist: String?
 
+    @Option(name: .long, help: "Override the target Apple Music playlist name (defaults to the Spotify playlist name).")
+    var name: String?
+
     @Option(name: .long, help: "Match score threshold 0–100 (default 85).")
     var matchThreshold: Int = 85
 
@@ -26,6 +29,9 @@ struct PlaylistConvert: AsyncParsableCommand {
 
     @Option(name: .long, help: "Path for the matched-track URL list (default ./matches.txt).")
     var matchesPath: String = "./matches.txt"
+
+    @Flag(name: .long, help: "Skip creating the empty playlist in Music.app (just emit files).")
+    var noPlaylist: Bool = false
 
     @Flag(name: .long, help: "Verbose logging — print each unmatched track and its best candidate.")
     var verbose: Bool = false
@@ -148,11 +154,30 @@ struct PlaylistConvert: AsyncParsableCommand {
         try Report.writeURLList(rows, playlistName: playlist.name, to: matchesPath)
         Report.printSummary(conversionReport, csvPath: reportPath, urlsPath: matchesPath)
 
-        print("")
-        print("Next: open Music.app, make a new playlist, then either")
-        print("  • run:  xargs -I{} open '{}' < \(matchesPath)   (loads each in Music.app)")
-        print("  • or click each URL in \(matchesPath) one at a time.")
-        print("Then in Music.app drag the loaded songs into your playlist.")
+        // ── Best-effort empty-playlist creation in Music.app ─────────────────
+        // Adding catalog tracks scriptedly is impossible without paid dev
+        // access (see README), but creating the empty playlist itself works
+        // and saves the user one Cmd-N. Soft failure: if Automation
+        // permission is denied, we still printed everything they need.
+        let targetName = name ?? playlist.name
+        if !noPlaylist {
+            do {
+                _ = try MusicAppBridge.createEmptyPlaylist(
+                    name: targetName,
+                    description: playlist.description
+                )
+                print("\n✓ Empty playlist '\(targetName)' created in Music.app.")
+                print("Next: in Music.app, leave that playlist open. Then in this terminal:")
+            } catch let err as MusicAppBridge.ScriptError {
+                fputs("\nnote: couldn't create the playlist in Music.app (\(err.description.prefix(120)))\n", stderr)
+                fputs("In Music.app, create a new playlist named '\(targetName)' yourself, then:\n", stderr)
+            }
+        } else {
+            print("\nIn Music.app, create a new playlist named '\(targetName)'. Then:")
+        }
+
+        print("  while IFS= read -r u; do [[ \"$u\" =~ ^https ]] && open -a Safari \"$u\" && sleep 0.4; done < \(matchesPath)")
+        print("This opens each match in Safari. From each tab → 'Listen on Apple Music' → '+' to add to library → drag into your playlist.")
     }
 
     private func printProgress(current: Int, total: Int, isrc: Int, search: Int) {
