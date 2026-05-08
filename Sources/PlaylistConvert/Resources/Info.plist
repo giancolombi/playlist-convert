@@ -10,8 +10,8 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
-    <key>NSAppleMusicUsageDescription</key>
-    <string>PlaylistConvert needs access to your Apple Music library to create playlists from your Spotify playlists.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>playlist-convert uses Music.app to create the new playlist and add tracks to it.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Local-use tool. Not for distribution.</string>
 </dict>

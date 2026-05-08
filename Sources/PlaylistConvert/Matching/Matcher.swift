@@ -1,7 +1,8 @@
 import Foundation
 
-/// A catalog candidate from Apple Music, normalized into a service-agnostic shape
-/// so the matcher can be tested without MusicKit.
+/// A catalog candidate from Apple Music, normalized into a service-agnostic
+/// shape so the matcher can be tested with synthetic data instead of hitting
+/// the iTunes Search API.
 struct Candidate: Equatable {
     let id: String
     let title: String
@@ -11,8 +12,9 @@ struct Candidate: Equatable {
     let durationMs: Int
 }
 
-/// Async closures the matcher uses to look up the catalog. The real implementation
-/// is backed by MusicKit; tests pass synchronous in-memory ones.
+/// Async closures the matcher uses to look up the catalog. Production wires
+/// these to AppleMusicClient (iTunes Search API); tests pass synchronous
+/// in-memory ones.
 struct CatalogLookup {
     var byISRC: (String) async throws -> Candidate?
     var search: (String) async throws -> [Candidate]

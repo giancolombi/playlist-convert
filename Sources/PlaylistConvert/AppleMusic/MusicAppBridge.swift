@@ -1,10 +1,11 @@
 import Foundation
 
-/// Drives Music.app via osascript to create playlists and add catalog tracks.
-/// MusicKit on macOS only exposes read APIs (search) and the empty-playlist
-/// constructor — for adding tracks to a playlist we have to script Music.app.
+/// Drives Music.app via osascript to create playlists and add catalog tracks
+/// (by Apple Music URL). The catalog URL comes from the iTunes Search API,
+/// and Music.app's `add` command resolves it against the user's Apple Music
+/// subscription.
 ///
-/// First invocation will trigger the macOS Automation permission prompt
+/// First invocation triggers the macOS Automation permission prompt
 /// (System Settings → Privacy & Security → Automation → playlist-convert → Music).
 enum MusicAppBridge {
 
