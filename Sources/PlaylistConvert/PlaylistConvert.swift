@@ -36,6 +36,9 @@ struct PlaylistConvert: AsyncParsableCommand {
     @Flag(name: .long, help: "Sync mode: skip the Spotify/iTunes match and walk an existing report.csv, opening each URL in Music.app and auto-adding tracks to your playlist as you click +.")
     var sync: Bool = false
 
+    @Option(name: .long, help: "App to receive the song URLs in --sync mode. Defaults to 'Music' (loads each in Music.app directly). Try 'Safari' or 'Google Chrome' to route through a browser instead.")
+    var openWith: String = "Music"
+
     @Flag(name: .long, help: "Verbose logging — print each unmatched track and its best candidate.")
     var verbose: Bool = false
 
@@ -215,6 +218,6 @@ struct PlaylistConvert: AsyncParsableCommand {
             target = line
         }
 
-        try await SyncFlow.run(rows: rows, playlistName: target)
+        try await SyncFlow.run(rows: rows, playlistName: target, openWith: openWith)
     }
 }

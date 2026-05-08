@@ -47,17 +47,21 @@ enum SyncFlow {
         return rows
     }
 
-    /// Walks `rows`, opening each URL in Music.app and polling for the track
-    /// to appear in the user's library. When detected, auto-adds it to the
-    /// named playlist.
-    static func run(rows: [Row], playlistName: String, perTrackTimeout: TimeInterval = 60) async throws {
+    /// Walks `rows`, opening each URL in `openWith` (Music.app by default)
+    /// and polling for the track to appear in the user's library. When
+    /// detected, auto-adds it to the named playlist.
+    static func run(rows: [Row], playlistName: String, openWith: String = "Music", perTrackTimeout: TimeInterval = 60) async throws {
         guard !rows.isEmpty else {
             print("No matched tracks to sync.")
             return
         }
 
-        print("Sync: walking \(rows.count) matched tracks into '\(playlistName)'.")
-        print("For each: a song loads in Music.app — click the + to add it to your library.")
+        print("Sync: walking \(rows.count) matched tracks into '\(playlistName)' via \(openWith).")
+        if openWith.lowercased() == "music" {
+            print("For each: a song loads in Music.app — click the + to add it to your library.")
+        } else {
+            print("For each: \(openWith) opens the song page — click 'Listen on Apple Music' (or equivalent) so it loads in Music.app, then click + to add to library.")
+        }
         print("The tool then auto-adds it to the playlist and advances. Ctrl-C to stop.\n")
 
         var added = 0
@@ -80,7 +84,7 @@ enum SyncFlow {
                 continue
             }
 
-            NSWorkspace.shared.open(row.appleMusicURL)
+            openInApp(row.appleMusicURL, app: openWith)
 
             let detected = await waitForLibraryAdd(databaseID: row.appleMusicID, timeout: perTrackTimeout)
             if !detected {
@@ -103,6 +107,31 @@ enum SyncFlow {
         print("─── Sync summary ───")
         print(" added:   \(added)/\(rows.count)")
         print(" skipped: \(skipped)")
+    }
+
+    /// Hands a URL to a specific app via `/usr/bin/open -a <app>`. Falls back
+    /// to NSWorkspace if the app name is empty or the spawn fails (some
+    /// Macs may not have the named app installed).
+    private static func openInApp(_ url: URL, app: String) {
+        let trimmed = app.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-a", trimmed, url.absoluteString]
+        do {
+            try p.run()
+            p.waitUntilExit()
+            if p.terminationStatus != 0 {
+                fputs("\n  warning: 'open -a \(trimmed)' exited \(p.terminationStatus); falling back to default handler.\n", stderr)
+                NSWorkspace.shared.open(url)
+            }
+        } catch {
+            fputs("\n  warning: couldn't run 'open -a \(trimmed)' (\(error)); falling back.\n", stderr)
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private static func waitForLibraryAdd(databaseID: String, timeout: TimeInterval) async -> Bool {
