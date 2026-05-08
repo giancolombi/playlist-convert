@@ -44,7 +44,8 @@ struct AppleMusicClient {
             await ITunesThrottle.shared.wait()
 
             var req = URLRequest(url: url)
-            req.setValue(Config.userAgent, forHTTPHeaderField: "User-Agent")
+            req.setValue(Config.itunesUserAgent, forHTTPHeaderField: "User-Agent")
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
             req.timeoutInterval = 20
 
             do {
@@ -55,14 +56,18 @@ struct AppleMusicClient {
                 }
                 switch http.statusCode {
                 case 200..<300:
+                    await ITunesThrottle.shared.didSucceed()
                     let decoded = try JSONDecoder().decode(ITunesResponse.self, from: data)
                     return decoded.results
                 case 403, 429:
-                    AppleMusicErrorLog.note("iTunes search rate-limited (\(http.statusCode)) — backing off 30s")
+                    await ITunesThrottle.shared.didRateLimit()
+                    let gap = await ITunesThrottle.shared.currentGap()
+                    AppleMusicErrorLog.note(String(format: "iTunes rate-limited (%d) — gap widened to %.1fs", http.statusCode, gap))
                     if attempt >= 3 { return [] }
-                    // The iTunes rate-limit window is ~1 minute; 30s + jitter
-                    // gives us a good chance of recovery.
-                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    // 45s pause + jitter — the rate window seems > 60s for
+                    // some IPs, so be patient before retrying.
+                    let jitter = UInt64.random(in: 0...5_000_000_000)
+                    try? await Task.sleep(nanoseconds: 45_000_000_000 + jitter)
                     continue
                 default:
                     if attempt >= 3 {
@@ -129,17 +134,17 @@ struct AppleMusicClient {
     }
 }
 
-/// Serializes iTunes Search API requests with a minimum gap between them so
-/// we stay under the anonymous rate limit (~20/min). 1.2s gap → ceiling of
-/// 50/min, well under what the API will tolerate before 403.
+/// Serializes iTunes Search API requests with an adaptive gap. Apple's
+/// anonymous rate limit is ~20/min, but the window seems to be longer than
+/// 60s in practice and varies by IP reputation. We start at 1.5s, widen to
+/// up to 6s after 403s, and slowly walk back down on sustained 200s.
 actor ITunesThrottle {
-    static let shared = ITunesThrottle(minGap: 1.2)
-    private let minGap: TimeInterval
+    static let shared = ITunesThrottle()
+    private let minGapBaseline: TimeInterval = 1.5
+    private let minGapCeiling: TimeInterval = 6.0
+    private var minGap: TimeInterval = 1.5
     private var lastRequest: Date = .distantPast
-
-    init(minGap: TimeInterval) {
-        self.minGap = minGap
-    }
+    private var successesSinceBackoff: Int = 0
 
     func wait() async {
         let now = Date()
@@ -150,6 +155,26 @@ actor ITunesThrottle {
         }
         lastRequest = Date()
     }
+
+    /// Called after a successful 200 response — gradually heals the throttle
+    /// back toward baseline so a transient 403 doesn't slow the rest of the
+    /// run forever.
+    func didSucceed() {
+        successesSinceBackoff += 1
+        if successesSinceBackoff >= 20 && minGap > minGapBaseline {
+            minGap = max(minGapBaseline, minGap - 0.5)
+            successesSinceBackoff = 0
+        }
+    }
+
+    /// Called after a 403/429 — widens the gap so the next batch is paced
+    /// more conservatively, capped at the ceiling.
+    func didRateLimit() {
+        successesSinceBackoff = 0
+        minGap = min(minGapCeiling, minGap + 1.0)
+    }
+
+    func currentGap() -> TimeInterval { minGap }
 }
 
 /// First-occurrence error log so the user gets one diagnostic line per error

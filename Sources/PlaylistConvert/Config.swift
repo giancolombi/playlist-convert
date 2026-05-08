@@ -1,7 +1,14 @@
 import Foundation
 
 enum Config {
-    static let userAgent = "PlaylistConvert/0.1 (local)"
+    /// Spotify is fine with our honest UA. Apple's iTunes Search API,
+    /// however, rate-limits unfamiliar UAs aggressively, so we present as
+    /// Safari for that endpoint specifically. See AppleMusicClient.
+    static let spotifyUserAgent = "PlaylistConvert/0.1 (local)"
+    static let itunesUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+    /// Default — kept for any legacy callers; new code should use the
+    /// service-specific constants.
+    static let userAgent = spotifyUserAgent
 
     static let spotifyAuthHost = "accounts.spotify.com"
     static let spotifyAPIHost = "api.spotify.com"
