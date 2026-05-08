@@ -1,9 +1,7 @@
 import Foundation
-import MusicKit
 
 /// Creates an Apple Music library playlist via Music.app AppleScript and adds
-/// catalog songs by their Apple Music URL. MusicKit's library-mutation APIs
-/// are macOS-unavailable; this is the available substitute.
+/// catalog songs by their Apple Music URL.
 enum PlaylistCreator {
 
     struct AddFailure {
@@ -16,7 +14,7 @@ enum PlaylistCreator {
     static func create(
         name: String,
         description: String?,
-        matched: [(track: SpotifyTrack, song: Song)],
+        matched: [(track: SpotifyTrack, song: AppleMusicSong)],
         progress: ((Int, Int) -> Void)? = nil
     ) throws -> (
         playlistRef: MusicAppBridge.PlaylistRef,
@@ -30,24 +28,14 @@ enum PlaylistCreator {
         var failures: [AddFailure] = []
 
         for (idx, pair) in matched.enumerated() {
-            guard let url = pair.song.url else {
-                failures.append(AddFailure(
-                    track: pair.track,
-                    appleSongID: pair.song.id.rawValue,
-                    appleSongTitle: pair.song.title,
-                    underlying: "Apple Music song has no URL"
-                ))
-                continue
-            }
             do {
-                try MusicAppBridge.addCatalogTrack(url: url, to: playlist)
+                try MusicAppBridge.addCatalogTrack(url: pair.song.url, to: playlist)
                 added += 1
                 progress?(added, matched.count)
             } catch let err as MusicAppBridge.ScriptError {
-                // Per-track failure is recorded but does not abort the run.
                 failures.append(AddFailure(
                     track: pair.track,
-                    appleSongID: pair.song.id.rawValue,
+                    appleSongID: pair.song.id,
                     appleSongTitle: pair.song.title,
                     underlying: err.description
                 ))

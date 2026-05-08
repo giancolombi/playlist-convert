@@ -1,6 +1,5 @@
 import ArgumentParser
 import Foundation
-import MusicKit
 
 @main
 struct PlaylistConvert: AsyncParsableCommand {
@@ -79,12 +78,8 @@ struct PlaylistConvert: AsyncParsableCommand {
         let playlist = try await client.fetchPlaylist(id: playlistID)
         print("Fetched \(playlist.tracks.count) tracks from '\(playlist.name)'\(playlist.skippedLocalCount > 0 ? " (\(playlist.skippedLocalCount) local files skipped)" : "")")
 
-        // ── Apple Music ──────────────────────────────────────────────────────
-        try await AppleMusicAuthorization.ensureAuthorized()
-        print("✓ Apple Music authorized")
-
         // ── Match ────────────────────────────────────────────────────────────
-        var matchedSongs: [(track: SpotifyTrack, song: Song)] = []
+        var matchedSongs: [(track: SpotifyTrack, song: AppleMusicSong)] = []
         var matchResults: [MatchResult] = []
         var isrcCount = 0
         var searchCount = 0
@@ -92,7 +87,7 @@ struct PlaylistConvert: AsyncParsableCommand {
 
         for (idx, track) in playlist.tracks.enumerated() {
             let result: MatchResult
-            let song: Song?
+            let song: AppleMusicSong?
 
             if let isrc = track.isrc, !isrc.isEmpty,
                let hit = try? await AppleMusicClient.findByISRC(isrc) {

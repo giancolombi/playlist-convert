@@ -37,6 +37,17 @@ struct MatchResult {
     let reason: String?
 }
 
+/// A song from the Apple Music catalog as returned by the iTunes Search API.
+/// Carries everything PlaylistCreator needs to add the track via AppleScript.
+struct AppleMusicSong {
+    let id: String          // catalog "trackId" as string, e.g. "1234567890"
+    let url: URL            // trackViewUrl — pass directly to Music.app `add`
+    let title: String
+    let artistName: String
+    let albumTitle: String
+    let durationMs: Int
+}
+
 struct ConversionReport {
     let playlistName: String
     let totalSpotify: Int
