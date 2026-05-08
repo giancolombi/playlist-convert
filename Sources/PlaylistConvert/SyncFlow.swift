@@ -1,0 +1,160 @@
+import AppKit
+import Foundation
+
+/// Walks the matched tracks from a previous run and adds each one to the
+/// target playlist as the user clicks + in Music.app to add it to their
+/// library. This is the "fastest possible" workflow given macOS's
+/// constraint that catalog → library mutation is user-driven only.
+enum SyncFlow {
+    struct Row {
+        let appleMusicID: String
+        let appleMusicURL: URL
+        let title: String
+        let artist: String
+    }
+
+    /// Reads matched rows from report.csv. Skips unmatched and malformed rows.
+    static func loadMatches(reportPath: String) throws -> [Row] {
+        let data = try Data(contentsOf: URL(fileURLWithPath: reportPath))
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        guard lines.count > 1 else { return [] }
+
+        let header = parseCSVLine(lines[0])
+        let idxAppleID = header.firstIndex(of: "apple_music_id") ?? -1
+        let idxURL = header.firstIndex(of: "apple_music_url") ?? -1
+        let idxTitle = header.firstIndex(of: "title") ?? -1
+        let idxBestArtist = header.firstIndex(of: "best_candidate_artist") ?? -1
+        let idxArtists = header.firstIndex(of: "artists") ?? -1
+
+        guard idxAppleID >= 0, idxURL >= 0 else {
+            throw CLIError.userMessage("CSV at \(reportPath) is missing apple_music_id / apple_music_url columns. Re-run the match step to regenerate.")
+        }
+
+        var rows: [Row] = []
+        for line in lines.dropFirst() {
+            let cells = parseCSVLine(line)
+            guard cells.count > max(idxAppleID, idxURL) else { continue }
+            let id = cells[idxAppleID]
+            let urlStr = cells[idxURL]
+            guard !id.isEmpty, let url = URL(string: urlStr) else { continue }
+            let title = idxTitle >= 0 && idxTitle < cells.count ? cells[idxTitle] : "?"
+            let artist = (idxBestArtist >= 0 && idxBestArtist < cells.count && !cells[idxBestArtist].isEmpty)
+                ? cells[idxBestArtist]
+                : (idxArtists >= 0 && idxArtists < cells.count ? cells[idxArtists] : "?")
+            rows.append(Row(appleMusicID: id, appleMusicURL: url, title: title, artist: artist))
+        }
+        return rows
+    }
+
+    /// Walks `rows`, opening each URL in Music.app and polling for the track
+    /// to appear in the user's library. When detected, auto-adds it to the
+    /// named playlist.
+    static func run(rows: [Row], playlistName: String, perTrackTimeout: TimeInterval = 60) async throws {
+        guard !rows.isEmpty else {
+            print("No matched tracks to sync.")
+            return
+        }
+
+        print("Sync: walking \(rows.count) matched tracks into '\(playlistName)'.")
+        print("For each: a song loads in Music.app — click the + to add it to your library.")
+        print("The tool then auto-adds it to the playlist and advances. Ctrl-C to stop.\n")
+
+        var added = 0
+        var skipped = 0
+
+        for (i, row) in rows.enumerated() {
+            let progress = "[\(i + 1)/\(rows.count)]"
+            fputs("\(progress) \(row.title) — \(row.artist)\n", stderr)
+            fputs("  opening in Music.app… click + when it loads, ", stderr)
+
+            // Skip if already in library (e.g. user added it last time).
+            if (try? MusicAppBridge.trackInLibrary(databaseID: row.appleMusicID)) == true {
+                fputs("already in library — adding…\n", stderr)
+                if (try? MusicAppBridge.addLibraryTrackToPlaylist(databaseID: row.appleMusicID, playlistName: playlistName)) != nil {
+                    added += 1
+                } else {
+                    skipped += 1
+                    fputs("    (couldn't add to playlist — skipped)\n", stderr)
+                }
+                continue
+            }
+
+            NSWorkspace.shared.open(row.appleMusicURL)
+
+            let detected = await waitForLibraryAdd(databaseID: row.appleMusicID, timeout: perTrackTimeout)
+            if !detected {
+                fputs("\n  timeout — skipped (\(Int(perTrackTimeout))s without + click)\n", stderr)
+                skipped += 1
+                continue
+            }
+
+            do {
+                try MusicAppBridge.addLibraryTrackToPlaylist(databaseID: row.appleMusicID, playlistName: playlistName)
+                fputs("✓ added to '\(playlistName)'\n", stderr)
+                added += 1
+            } catch let err as MusicAppBridge.ScriptError {
+                fputs("\n  added to library but couldn't insert into playlist: \(err.description.prefix(120))\n", stderr)
+                skipped += 1
+            }
+        }
+
+        print("")
+        print("─── Sync summary ───")
+        print(" added:   \(added)/\(rows.count)")
+        print(" skipped: \(skipped)")
+    }
+
+    private static func waitForLibraryAdd(databaseID: String, timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if (try? MusicAppBridge.trackInLibrary(databaseID: databaseID)) == true {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
+        return false
+    }
+
+    /// Minimal CSV line parser handling double-quoted fields and embedded
+    /// commas / escaped quotes ("").
+    static func parseCSVLine(_ line: String) -> [String] {
+        var cells: [String] = []
+        var current = ""
+        var inQuotes = false
+        var i = line.startIndex
+        while i < line.endIndex {
+            let ch = line[i]
+            if inQuotes {
+                if ch == "\"" {
+                    let next = line.index(after: i)
+                    if next < line.endIndex && line[next] == "\"" {
+                        current.append("\"")
+                        i = line.index(after: next)
+                        continue
+                    }
+                    inQuotes = false
+                    i = line.index(after: i)
+                    continue
+                }
+                current.append(ch)
+                i = line.index(after: i)
+            } else {
+                switch ch {
+                case "\"":
+                    inQuotes = true
+                    i = line.index(after: i)
+                case ",":
+                    cells.append(current)
+                    current = ""
+                    i = line.index(after: i)
+                default:
+                    current.append(ch)
+                    i = line.index(after: i)
+                }
+            }
+        }
+        cells.append(current)
+        return cells
+    }
+}

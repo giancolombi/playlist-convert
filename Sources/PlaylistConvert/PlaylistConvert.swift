@@ -33,6 +33,9 @@ struct PlaylistConvert: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip creating the empty playlist in Music.app (just emit files).")
     var noPlaylist: Bool = false
 
+    @Flag(name: .long, help: "Sync mode: skip the Spotify/iTunes match and walk an existing report.csv, opening each URL in Music.app and auto-adding tracks to your playlist as you click +.")
+    var sync: Bool = false
+
     @Flag(name: .long, help: "Verbose logging — print each unmatched track and its best candidate.")
     var verbose: Bool = false
 
@@ -46,6 +49,12 @@ struct PlaylistConvert: AsyncParsableCommand {
     }
 
     private func execute() async throws {
+        // ── Sync mode short-circuit ──────────────────────────────────────────
+        if sync {
+            try await runSync()
+            return
+        }
+
         // ── Config (run wizard on first use) ─────────────────────────────────
         let userConfig: Config.UserConfig
         if let existing = try Config.loadUserConfig() {
@@ -183,5 +192,29 @@ struct PlaylistConvert: AsyncParsableCommand {
     private func printProgress(current: Int, total: Int, isrc: Int, search: Int) {
         let line = String(format: "\rMatching: %d/%d (search: %d)", current, total, search)
         fputs(line, stderr)
+    }
+
+    private func runSync() async throws {
+        let rows = try SyncFlow.loadMatches(reportPath: reportPath)
+        if rows.isEmpty {
+            throw CLIError.userMessage("""
+                No matched tracks found in \(reportPath). Either it doesn't exist
+                or no rows have an apple_music_url column populated.
+                Run a match first:  playlist-convert <spotify-url>
+                """)
+        }
+
+        let target: String
+        if let n = name, !n.isEmpty {
+            target = n
+        } else {
+            print("Target Apple Music playlist name (must match exactly): ", terminator: "")
+            guard let line = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty else {
+                throw CLIError.userMessage("Playlist name required for --sync. Re-run with --name \"<name>\".")
+            }
+            target = line
+        }
+
+        try await SyncFlow.run(rows: rows, playlistName: target)
     }
 }

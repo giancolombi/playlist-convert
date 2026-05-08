@@ -110,9 +110,33 @@ showing the right Automation prompt copy on first run, this is usually why.
   with `make new user playlist with properties {…}` and returns the
   persistent ID. This is the **only** library mutation we can do without
   paid dev access.
+- `MusicAppBridge.trackInLibrary(databaseID:)` and
+  `addLibraryTrackToPlaylist(databaseID:playlistName:)` work *only* for
+  tracks already in the user's library — `database id` lookup against the
+  catalog at large fails with `-1728 object not found`. We use these in
+  `SyncFlow` to detect "user just clicked + on this song" and then add it
+  to the playlist via `duplicate to`.
 - First call triggers the macOS Automation prompt (Privacy & Security →
   Automation → playlist-convert → Music). If denied, the CLI soft-fails
   and prints a manual-create note instead of aborting.
+
+### `--sync` mode (SyncFlow)
+
+A second pass over an existing `report.csv` that's faster than manual
+drag-drop. Run as `playlist-convert --sync --name "<playlist>"`. For each
+matched row:
+
+1. `NSWorkspace.shared.open(<apple_music_url>)` — Music.app navigates to
+   the song.
+2. Poll `MusicAppBridge.trackInLibrary(databaseID:)` every 400ms; user
+   clicks **+** in Music.app to add to library; we detect within ~half a
+   second.
+3. `MusicAppBridge.addLibraryTrackToPlaylist` does the `duplicate to`.
+4. Per-track timeout: 60s. Skips on timeout; doesn't abort the run.
+
+Cuts per-track work from ~10s (drag-drop) to ~3s (one click). Catalog
+song IDs from iTunes Search API are equivalent to Music.app's
+`database id` once a track is in the library.
 
 ## What we tried that does not work — DO NOT redo
 
