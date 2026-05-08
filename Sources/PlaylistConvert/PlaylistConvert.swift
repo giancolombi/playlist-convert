@@ -36,6 +36,9 @@ struct PlaylistConvert: AsyncParsableCommand {
     @Flag(name: .long, help: "Sync mode: skip the Spotify/iTunes match and walk an existing report.csv, opening each URL in Music.app and auto-adding tracks to your playlist as you click +.")
     var sync: Bool = false
 
+    @Flag(name: .long, help: "Sweep mode: like --sync but doesn't open URLs or wait — just adds any matched tracks already in your Music library to the playlist and exits. Run this any time after manually adding songs.")
+    var sweep: Bool = false
+
     @Option(name: .long, help: "App to receive the song URLs in --sync mode. Defaults to 'Music' (loads each in Music.app directly). Try 'Safari' or 'Google Chrome' to route through a browser instead.")
     var openWith: String = "Music"
 
@@ -52,9 +55,9 @@ struct PlaylistConvert: AsyncParsableCommand {
     }
 
     private func execute() async throws {
-        // ── Sync mode short-circuit ──────────────────────────────────────────
-        if sync {
-            try await runSync()
+        // ── Sync / Sweep mode short-circuit ──────────────────────────────────
+        if sync || sweep {
+            try await runSyncOrSweep(sweepOnly: sweep)
             return
         }
 
@@ -197,7 +200,7 @@ struct PlaylistConvert: AsyncParsableCommand {
         fputs(line, stderr)
     }
 
-    private func runSync() async throws {
+    private func runSyncOrSweep(sweepOnly: Bool) async throws {
         let rows = try SyncFlow.loadMatches(reportPath: reportPath)
         if rows.isEmpty {
             throw CLIError.userMessage("""
@@ -211,13 +214,18 @@ struct PlaylistConvert: AsyncParsableCommand {
         if let n = name, !n.isEmpty {
             target = n
         } else {
+            let mode = sweepOnly ? "--sweep" : "--sync"
             print("Target Apple Music playlist name (must match exactly): ", terminator: "")
             guard let line = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty else {
-                throw CLIError.userMessage("Playlist name required for --sync. Re-run with --name \"<name>\".")
+                throw CLIError.userMessage("Playlist name required for \(mode). Re-run with --name \"<name>\".")
             }
             target = line
         }
 
-        try await SyncFlow.run(rows: rows, playlistName: target, openWith: openWith)
+        if sweepOnly {
+            try SyncFlow.sweep(rows: rows, playlistName: target)
+        } else {
+            try await SyncFlow.run(rows: rows, playlistName: target, openWith: openWith)
+        }
     }
 }

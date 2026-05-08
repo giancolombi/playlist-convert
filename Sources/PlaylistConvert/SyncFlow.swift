@@ -59,6 +59,37 @@ enum SyncFlow {
         return nil
     }
 
+    /// One-pass: scan the matched rows, and for any track already in the
+    /// user's library, add it to the named playlist. Doesn't open URLs and
+    /// doesn't wait. Useful after the user has manually added songs while
+    /// `--sync` wasn't running.
+    static func sweep(rows: [Row], playlistName: String) throws {
+        guard !rows.isEmpty else {
+            print("No matched tracks to sweep.")
+            return
+        }
+        print("Sweep: scanning \(rows.count) matched rows for tracks already in your library…")
+        var added = 0
+        var skipped = 0
+        for row in rows {
+            let inLib = (try? MusicAppBridge.trackInLibrary(databaseID: row.appleMusicID, name: row.title, artist: row.artist)) == true
+            guard inLib else { continue }
+            do {
+                try MusicAppBridge.addLibraryTrackToPlaylist(databaseID: row.appleMusicID, name: row.title, artist: row.artist, playlistName: playlistName)
+                added += 1
+                fputs("  ✓ \(row.title) — \(row.artist)\n", stderr)
+            } catch {
+                skipped += 1
+                fputs("  ✗ \(row.title) — \(row.artist) (\(error))\n", stderr)
+            }
+        }
+        print("")
+        print("Sweep complete: \(added) added, \(skipped) failed, \(rows.count - added - skipped) not in library.")
+        if added < rows.count {
+            print("To add the rest, run:  playlist-convert --sync --name \"\(playlistName)\"")
+        }
+    }
+
     /// Walks `rows`, opening each URL in `openWith` (Music.app by default)
     /// and polling for the track to appear in the user's library. When
     /// detected, auto-adds it to the named playlist.
