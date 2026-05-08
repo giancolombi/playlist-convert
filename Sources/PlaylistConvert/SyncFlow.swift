@@ -23,9 +23,10 @@ enum SyncFlow {
         let header = parseCSVLine(lines[0])
         let idxAppleID = header.firstIndex(of: "apple_music_id") ?? -1
         let idxURL = header.firstIndex(of: "apple_music_url") ?? -1
-        let idxTitle = header.firstIndex(of: "title") ?? -1
+        let idxBestTitle = header.firstIndex(of: "best_candidate_title") ?? -1
+        let idxSpotifyTitle = header.firstIndex(of: "title") ?? -1
         let idxBestArtist = header.firstIndex(of: "best_candidate_artist") ?? -1
-        let idxArtists = header.firstIndex(of: "artists") ?? -1
+        let idxSpotifyArtists = header.firstIndex(of: "artists") ?? -1
 
         guard idxAppleID >= 0, idxURL >= 0 else {
             throw CLIError.userMessage("CSV at \(reportPath) is missing apple_music_id / apple_music_url columns. Re-run the match step to regenerate.")
@@ -38,13 +39,24 @@ enum SyncFlow {
             let id = cells[idxAppleID]
             let urlStr = cells[idxURL]
             guard !id.isEmpty, let url = URL(string: urlStr) else { continue }
-            let title = idxTitle >= 0 && idxTitle < cells.count ? cells[idxTitle] : "?"
-            let artist = (idxBestArtist >= 0 && idxBestArtist < cells.count && !cells[idxBestArtist].isEmpty)
-                ? cells[idxBestArtist]
-                : (idxArtists >= 0 && idxArtists < cells.count ? cells[idxArtists] : "?")
+            // Prefer the Apple-Music-side metadata for AppleScript exact-match
+            // queries (Spotify titles often differ — "(feat. X)", "Remastered",
+            // smart quotes — and would miss against Music.app's library).
+            let title = pickNonEmpty(cells, idxBestTitle, idxSpotifyTitle) ?? "?"
+            let artist = pickNonEmpty(cells, idxBestArtist, idxSpotifyArtists) ?? "?"
             rows.append(Row(appleMusicID: id, appleMusicURL: url, title: title, artist: artist))
         }
         return rows
+    }
+
+    private static func pickNonEmpty(_ cells: [String], _ first: Int, _ fallback: Int) -> String? {
+        if first >= 0 && first < cells.count, !cells[first].isEmpty {
+            return cells[first]
+        }
+        if fallback >= 0 && fallback < cells.count, !cells[fallback].isEmpty {
+            return cells[fallback]
+        }
+        return nil
     }
 
     /// Walks `rows`, opening each URL in `openWith` (Music.app by default)
@@ -73,9 +85,9 @@ enum SyncFlow {
             fputs("  opening in Music.app… click + when it loads, ", stderr)
 
             // Skip if already in library (e.g. user added it last time).
-            if (try? MusicAppBridge.trackInLibrary(databaseID: row.appleMusicID)) == true {
+            if (try? MusicAppBridge.trackInLibrary(databaseID: row.appleMusicID, name: row.title, artist: row.artist)) == true {
                 fputs("already in library — adding…\n", stderr)
-                if (try? MusicAppBridge.addLibraryTrackToPlaylist(databaseID: row.appleMusicID, playlistName: playlistName)) != nil {
+                if (try? MusicAppBridge.addLibraryTrackToPlaylist(databaseID: row.appleMusicID, name: row.title, artist: row.artist, playlistName: playlistName)) != nil {
                     added += 1
                 } else {
                     skipped += 1
@@ -86,19 +98,19 @@ enum SyncFlow {
 
             openInApp(row.appleMusicURL, app: openWith)
 
-            let detected = await waitForLibraryAdd(databaseID: row.appleMusicID, timeout: perTrackTimeout)
+            let detected = await waitForLibraryAdd(databaseID: row.appleMusicID, name: row.title, artist: row.artist, timeout: perTrackTimeout)
             if !detected {
-                fputs("\n  timeout — skipped (\(Int(perTrackTimeout))s without + click)\n", stderr)
+                fputs("\n  timeout — skipped (\(Int(perTrackTimeout))s; verify you clicked + in Music.app, not just in the browser)\n", stderr)
                 skipped += 1
                 continue
             }
 
             do {
-                try MusicAppBridge.addLibraryTrackToPlaylist(databaseID: row.appleMusicID, playlistName: playlistName)
+                try MusicAppBridge.addLibraryTrackToPlaylist(databaseID: row.appleMusicID, name: row.title, artist: row.artist, playlistName: playlistName)
                 fputs("✓ added to '\(playlistName)'\n", stderr)
                 added += 1
             } catch let err as MusicAppBridge.ScriptError {
-                fputs("\n  added to library but couldn't insert into playlist: \(err.description.prefix(120))\n", stderr)
+                fputs("\n  detected in library but couldn't insert into playlist: \(err.description.prefix(160))\n", stderr)
                 skipped += 1
             }
         }
@@ -134,10 +146,10 @@ enum SyncFlow {
         }
     }
 
-    private static func waitForLibraryAdd(databaseID: String, timeout: TimeInterval) async -> Bool {
+    private static func waitForLibraryAdd(databaseID: String, name: String, artist: String, timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if (try? MusicAppBridge.trackInLibrary(databaseID: databaseID)) == true {
+            if (try? MusicAppBridge.trackInLibrary(databaseID: databaseID, name: name, artist: artist)) == true {
                 return true
             }
             try? await Task.sleep(nanoseconds: 400_000_000)

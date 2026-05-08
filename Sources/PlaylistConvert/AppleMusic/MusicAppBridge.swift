@@ -11,45 +11,58 @@ enum MusicAppBridge {
     /// Creates an empty user playlist with `name` and (optional) `description`.
     /// Returns the persistent ID Music.app assigns. If Music.app isn't
     /// running it launches first.
-    /// True iff a track with the given catalog/database ID exists in the
-    /// user's Music library. Used to detect "user just clicked + on this
-    /// track" during sync.
-    static func trackInLibrary(databaseID: String) throws -> Bool {
+    /// True iff a track matching this catalog song exists in the user's
+    /// Music library. Tries database ID first (catalog id may equal library
+    /// db id depending on how iCloud Music Library handled the add); falls
+    /// back to exact name+artist match.
+    static func trackInLibrary(databaseID: String, name: String, artist: String) throws -> Bool {
         let script = """
         on run argv
             set tid to (item 1 of argv) as integer
+            set tname to item 2 of argv
+            set tartist to item 3 of argv
             tell application "Music"
                 try
                     set t to (first track whose database ID is tid)
                     return "yes"
-                on error
-                    return "no"
                 end try
+                try
+                    set t to (first track of library playlist 1 whose name is tname and artist is tartist)
+                    return "yes"
+                end try
+                return "no"
             end tell
         end run
         """
-        let out = try runScript(source: script, args: [databaseID])
+        let out = try runScript(source: script, args: [databaseID, name, artist])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return out == "yes"
     }
 
-    /// Adds a track that's already in the user's library to a named user
-    /// playlist (via `duplicate`). Throws if the track or playlist isn't
-    /// found.
-    static func addLibraryTrackToPlaylist(databaseID: String, playlistName: String) throws {
+    /// Adds a track that's in the user's library to a named user playlist
+    /// (via `duplicate`). Tries database ID, then name+artist. Throws if
+    /// neither lookup finds the track or the playlist isn't found.
+    static func addLibraryTrackToPlaylist(databaseID: String, name: String, artist: String, playlistName: String) throws {
         let script = """
         on run argv
             set tid to (item 1 of argv) as integer
-            set pname to item 2 of argv
+            set tname to item 2 of argv
+            set tartist to item 3 of argv
+            set pname to item 4 of argv
             tell application "Music"
-                set t to (first track whose database ID is tid)
                 set p to (first user playlist whose name is pname)
+                try
+                    set t to (first track whose database ID is tid)
+                    duplicate t to p
+                    return "ok-by-id"
+                end try
+                set t to (first track of library playlist 1 whose name is tname and artist is tartist)
                 duplicate t to p
-                return "ok"
+                return "ok-by-name"
             end tell
         end run
         """
-        _ = try runScript(source: script, args: [databaseID, playlistName])
+        _ = try runScript(source: script, args: [databaseID, name, artist, playlistName])
     }
 
     @discardableResult
