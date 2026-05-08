@@ -5,26 +5,27 @@ import Foundation
 struct PlaylistConvert: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "playlist-convert",
-        abstract: "Convert a Spotify playlist into an Apple Music playlist on this Mac."
+        abstract: "Match a Spotify playlist against the Apple Music catalog and emit URL list + CSV report.",
+        discussion: """
+            macOS does not let third-party tools without paid Apple Developer access
+            script the final "add catalog track to playlist" step. So this tool stops
+            at the matching boundary: it gives you Apple Music URLs for every track
+            it could match, and a CSV explaining anything it couldn't. You create the
+            new playlist in Music.app yourself and add the matched tracks.
+            """
     )
 
     @Argument(help: "Spotify playlist URL, URI, or 22-char ID. If omitted, you'll be prompted (with clipboard auto-detect).")
     var spotifyPlaylist: String?
 
-    @Option(name: .long, help: "Override the target playlist name.")
-    var name: String?
-
-    @Option(name: .long, help: "Override the target playlist description.")
-    var description: String?
-
     @Option(name: .long, help: "Match score threshold 0–100 (default 85).")
     var matchThreshold: Int = 85
 
-    @Flag(name: .long, help: "Match only — do not create the Apple Music playlist.")
-    var dryRun: Bool = false
-
-    @Option(name: .long, help: "Path for the unmatched-tracks CSV report.")
+    @Option(name: .long, help: "Path for the per-track CSV report (default ./report.csv).")
     var reportPath: String = "./report.csv"
+
+    @Option(name: .long, help: "Path for the matched-track URL list (default ./matches.txt).")
+    var matchesPath: String = "./matches.txt"
 
     @Flag(name: .long, help: "Verbose logging — print each unmatched track and its best candidate.")
     var verbose: Bool = false
@@ -33,9 +34,6 @@ struct PlaylistConvert: AsyncParsableCommand {
         do {
             try await execute()
         } catch let err as CLIError {
-            fputs("error: \(err.description)\n", stderr)
-            throw ExitCode(1)
-        } catch let err as MusicAppBridge.ScriptError {
             fputs("error: \(err.description)\n", stderr)
             throw ExitCode(1)
         }
@@ -68,7 +66,7 @@ struct PlaylistConvert: AsyncParsableCommand {
                 """)
         }
 
-        // ── Spotify ───────────────────────────────────────────────────────────
+        // ── Spotify ──────────────────────────────────────────────────────────
         let auth = SpotifyAuth(clientID: userConfig.spotifyClientID)
         let client = SpotifyClient(auth: auth)
 
@@ -76,149 +74,89 @@ struct PlaylistConvert: AsyncParsableCommand {
         print("✓ Spotify authorized")
 
         let playlist = try await client.fetchPlaylist(id: playlistID)
-        print("Fetched \(playlist.tracks.count) tracks from '\(playlist.name)'\(playlist.skippedLocalCount > 0 ? " (\(playlist.skippedLocalCount) local files skipped)" : "")")
+        let localNote = playlist.skippedLocalCount > 0 ? " (\(playlist.skippedLocalCount) local files skipped)" : ""
+        print("Fetched \(playlist.tracks.count) tracks from '\(playlist.name)'\(localNote)")
 
-        // ── Match ────────────────────────────────────────────────────────────
-        var matchedSongs: [(track: SpotifyTrack, song: AppleMusicSong)] = []
-        var matchResults: [MatchResult] = []
-        var isrcCount = 0
+        // ── Match against the iTunes Search API ──────────────────────────────
+        var rows: [MatchRow] = []
+        let isrcCount = 0  // ISRC tier disabled — see AppleMusicClient.findByISRC.
         var searchCount = 0
         let total = playlist.tracks.count
 
         for (idx, track) in playlist.tracks.enumerated() {
             let result: MatchResult
-            let song: AppleMusicSong?
+            var matchedURL: URL? = nil
 
-            if let isrc = track.isrc, !isrc.isEmpty,
-               let hit = try? await AppleMusicClient.findByISRC(isrc) {
-                let scored = Matcher.score(track: track, candidate: hit.candidate)
+            let term = Matcher.textSearchTerm(for: track)
+            let candidates = (try? await AppleMusicClient.search(term: term)) ?? []
+            let scored = candidates
+                .map { (pair: $0, scored: Matcher.score(track: track, candidate: $0.candidate)) }
+                .max { $0.scored.score < $1.scored.score }
+
+            if let s = scored, s.scored.score >= Double(matchThreshold) {
                 result = MatchResult(
                     track: track,
-                    tier: .isrc,
-                    appleSongID: hit.candidate.id,
-                    score: scored.score,
-                    bestCandidateTitle: hit.candidate.title,
-                    bestCandidateArtist: hit.candidate.artistName,
+                    tier: .search,
+                    appleSongID: s.pair.candidate.id,
+                    score: s.scored.score,
+                    bestCandidateTitle: s.pair.candidate.title,
+                    bestCandidateArtist: s.pair.candidate.artistName,
                     reason: nil
                 )
-                song = hit.song
-                isrcCount += 1
+                matchedURL = s.pair.song.url
+                searchCount += 1
             } else {
-                let term = Matcher.textSearchTerm(for: track)
-                let candidates = (try? await AppleMusicClient.search(term: term)) ?? []
-                let scored = candidates
-                    .map { (pair: $0, scored: Matcher.score(track: track, candidate: $0.candidate)) }
-                    .max { $0.scored.score < $1.scored.score }
-
-                if let s = scored, s.scored.score >= Double(matchThreshold) {
-                    result = MatchResult(
-                        track: track,
-                        tier: .search,
-                        appleSongID: s.pair.candidate.id,
-                        score: s.scored.score,
-                        bestCandidateTitle: s.pair.candidate.title,
-                        bestCandidateArtist: s.pair.candidate.artistName,
-                        reason: nil
-                    )
-                    song = s.pair.song
-                    searchCount += 1
-                } else {
-                    result = MatchResult(
-                        track: track,
-                        tier: .unmatched,
-                        appleSongID: nil,
-                        score: scored?.scored.score ?? 0,
-                        bestCandidateTitle: scored?.pair.candidate.title,
-                        bestCandidateArtist: scored?.pair.candidate.artistName,
-                        reason: scored == nil
-                            ? "no search results"
-                            : String(format: "below threshold (%.1f < %d)", scored!.scored.score, matchThreshold)
-                    )
-                    song = nil
-                }
+                result = MatchResult(
+                    track: track,
+                    tier: .unmatched,
+                    appleSongID: nil,
+                    score: scored?.scored.score ?? 0,
+                    bestCandidateTitle: scored?.pair.candidate.title,
+                    bestCandidateArtist: scored?.pair.candidate.artistName,
+                    reason: scored == nil
+                        ? "no search results"
+                        : String(format: "below threshold (%.1f < %d)", scored!.scored.score, matchThreshold)
+                )
             }
 
-            matchResults.append(result)
-            if let song { matchedSongs.append((track, song)) }
+            rows.append(MatchRow(result: result, appleMusicURL: matchedURL))
             printProgress(current: idx + 1, total: total, isrc: isrcCount, search: searchCount)
         }
-        fputs("\n", stderr)  // newline after the progress line
-
-        let unmatchedResults = matchResults.filter { $0.tier == .unmatched }
-
-        if verbose {
-            for r in unmatchedResults {
-                let cand = r.bestCandidateTitle.map { " — best: \"\($0)\" by \(r.bestCandidateArtist ?? "?")" } ?? ""
-                print("  unmatched: \"\(r.track.name)\" by \(r.track.primaryArtist)\(cand) [\(r.reason ?? "")]")
-            }
-        }
-
-        // ── Dry run? ─────────────────────────────────────────────────────────
-        if dryRun {
-            let report = ConversionReport(
-                playlistName: name ?? playlist.name,
-                totalSpotify: playlist.tracks.count,
-                skippedLocal: playlist.skippedLocalCount,
-                matchedISRC: isrcCount,
-                matchedSearch: searchCount,
-                unmatched: unmatchedResults.count,
-                appleMusicURL: nil,
-                unmatchedDetails: unmatchedResults
-            )
-            Report.printSummary(report)
-            try Report.writeCSV(unmatchedResults, to: reportPath)
-            print(" report:          \(reportPath)")
-            print("(dry run — no playlist created)")
-            return
-        }
-
-        // ── Create the Apple Music playlist ──────────────────────────────────
-        guard !matchedSongs.isEmpty else {
-            throw CLIError.userMessage("No tracks matched — refusing to create an empty playlist. See \(reportPath).")
-        }
-
-        let creation = try PlaylistCreator.create(
-            name: name ?? playlist.name,
-            description: description ?? playlist.description,
-            matched: matchedSongs,
-            progress: { added, total in
-                fputs("\rAdding to Music: \(added)/\(total)", stderr)
-            }
-        )
         fputs("\n", stderr)
 
-        // Per-track add failures get recorded as unmatched-after-match.
-        var finalUnmatched = unmatchedResults
-        for f in creation.addFailures {
-            finalUnmatched.append(MatchResult(
-                track: f.track,
-                tier: .unmatched,
-                appleSongID: f.appleSongID,
-                score: 0,
-                bestCandidateTitle: f.appleSongTitle,
-                bestCandidateArtist: nil,
-                reason: "matched but Music.app add failed: \(f.underlying)"
-            ))
+        let unmatched = rows.filter { $0.result.tier == .unmatched }
+
+        if verbose {
+            for r in unmatched {
+                let cand = r.result.bestCandidateTitle.map { " — best: \"\($0)\" by \(r.result.bestCandidateArtist ?? "?")" } ?? ""
+                print("  unmatched: \"\(r.result.track.name)\" by \(r.result.track.primaryArtist)\(cand) [\(r.result.reason ?? "")]")
+            }
         }
 
-        let amURL = (try? MusicAppBridge.playlistURL(for: creation.playlistRef)) ?? nil
-        let report = ConversionReport(
-            playlistName: name ?? playlist.name,
+        let conversionReport = ConversionReport(
+            playlistName: playlist.name,
             totalSpotify: playlist.tracks.count,
             skippedLocal: playlist.skippedLocalCount,
             matchedISRC: isrcCount,
             matchedSearch: searchCount,
-            unmatched: finalUnmatched.count,
-            appleMusicURL: amURL,
-            unmatchedDetails: finalUnmatched
+            unmatched: unmatched.count,
+            appleMusicURL: nil,
+            unmatchedDetails: unmatched.map(\.result)
         )
-        Report.printSummary(report)
-        try Report.writeCSV(finalUnmatched, to: reportPath)
-        print(" report:          \(reportPath)")
+
+        try Report.writeCSV(rows, to: reportPath)
+        try Report.writeURLList(rows, playlistName: playlist.name, to: matchesPath)
+        Report.printSummary(conversionReport, csvPath: reportPath, urlsPath: matchesPath)
+
+        print("")
+        print("Next: open Music.app, make a new playlist, then either")
+        print("  • run:  xargs -I{} open '{}' < \(matchesPath)   (loads each in Music.app)")
+        print("  • or click each URL in \(matchesPath) one at a time.")
+        print("Then in Music.app drag the loaded songs into your playlist.")
     }
 
     private func printProgress(current: Int, total: Int, isrc: Int, search: Int) {
-        let line = String(format: "\rMatching: %d/%d (ISRC: %d, search: %d)", current, total, isrc, search)
+        let line = String(format: "\rMatching: %d/%d (search: %d)", current, total, search)
         fputs(line, stderr)
     }
 }
